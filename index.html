@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<script>/* iPhone: iOS 26 Safari shows the page under its status bar only once the page is
+   scrolled, so this page sits scrolled a little (.ios-bleed in the CSS) */
+if (/iPhone|iPod/.test(navigator.userAgent) || /[?&]iosbleed/.test(location.search))   /* ?iosbleed: QA on a desktop */
+  document.documentElement.classList.add('ios-bleed');</script>
 <meta name="color-scheme" content="light">
 <title>Macro - Tuning System Reference</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -272,10 +276,58 @@ body{color:var(--ab-cream)}
 #marble-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 /* the grained green stays on the root, under the bath; the body must not paint over it */
 html.marble-on body { background: none !important; }
+
+/* the iPhone (.ios-bleed, set in the head; ?iosbleed to QA on a desktop): edge to edge under
+   Safari's bars, as on the home page (memory ios26_safari_bars). A fixed layer makes iOS 26
+   Safari paint its bars solid, so here the bath is an ordinary layer one screen high, the
+   window scrolls only by the --bleed (Safari shows the page under its status bar once it is
+   scrolled; a snap point holds it there), and the page itself scrolls inside the body. The
+   body is not positioned, so the bath and the snap point don't scroll with it. */
+.ios-bleed { --bleed: 64px; overflow-y: scroll; overscroll-behavior-y: none; scroll-snap-type: y mandatory;
+  scroll-behavior: auto; }
+.ios-bleed body { box-sizing: border-box; height: 100lvh; min-height: 0; margin-top: var(--bleed);
+  overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain;
+  margin-left: env(safe-area-inset-left, 0px); margin-right: env(safe-area-inset-right, 0px); }
+/* clear of the status bar and the address bar (body::before was an empty fixed layer) */
+.ios-bleed body::before { content: ''; position: static; display: block; inset: auto;
+  height: env(safe-area-inset-top, 0px); background: none; }
+.ios-bleed body::after { content: ''; display: block; height: env(safe-area-inset-bottom, 0px); }
+.ios-bleed .frame-bath { position: absolute; top: 0; left: 0; right: 0; bottom: auto;
+  height: calc(100lvh + var(--bleed) + 160px); }
+.bleed-snap { display: none; }
+.ios-bleed .bleed-snap { display: block; position: absolute; top: var(--bleed); left: 0; width: 1px; height: 1px;
+  scroll-snap-align: start; pointer-events: none; }
 </style>
 </head>
 <body>
 <div class="frame-bath" aria-hidden="true"><canvas id="marble-canvas"></canvas></div>
+<div class="bleed-snap" aria-hidden="true"></div>
+<script>
+/* .ios-bleed: the bath and the snap point belong to the window, not the scrolling body */
+(function(){
+  var root = document.documentElement;
+  if (!root.classList.contains('ios-bleed')) return;
+  root.appendChild(document.querySelector('.frame-bath'));
+  root.appendChild(document.querySelector('.bleed-snap'));
+})();
+</script>
+<script>
+/* .ios-bleed: open scrolled to the bleed; the snap point keeps it there */
+(function(){
+  var root = document.documentElement;
+  if (!root.classList.contains('ios-bleed')) return;
+  if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+  function settle(){
+    var b = parseFloat(getComputedStyle(root).getPropertyValue('--bleed')) || 0;
+    if (Math.abs(window.scrollY - b) > 1) window.scrollTo(0, b);
+  }
+  settle();
+  window.addEventListener('load', settle);
+  window.addEventListener('pageshow', settle);
+  window.addEventListener('orientationchange', function(){ setTimeout(settle, 300); });
+})();
+</script>
+
 <div class="wrap">
 
   <div class="logo-wrap"><a href="/" aria-label="Home" style="display:inline-block;text-decoration:none" title="Home"><div class="macro-graphic" id="macroGraphic" aria-label="Macro - animated interference graphic"></div></a></div>
@@ -1200,7 +1252,7 @@ if (!cv) return;
    where they show. With it, CFG.reveal (a selector) names elements on the card
    to paint behind as well, and MARBLE.onFrame(canvas) runs after each frame
    so the page can copy that paint into them (the macro menu's rollover).
-   CFG.shadow {base, lo, hi, grain} draws the card as well, as smoked glass in
+   CFG.shadow {base, lo, hi, grain, inset, invert} draws the card as well, as smoked glass in
    its own colour: the same paint under it as a dark shadow (the page makes the
    card see-through while the marbling runs).
    Without CFG.frame it is the upstream engine, frame for frame. */
@@ -1239,9 +1291,13 @@ const maxAniso = aniso ? gl.getParameter(aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT) :
 const ND = 24;      // drops still spreading since the last bake
 const NS = 12;      // stylus tips (a comb is several)
 const NV = 3;       // slow eddies
-const NOPS = 320;   // operations in the opening composition
+const NOPS = CFG.nops || 320;   // operations in the opening composition
+/* CFG.detail: zoomed out by this much, for print stills: the bath is that many times
+   larger in the same frame, so drops, eddies and flow all come out finer (give it
+   CFG.nops ~ 320 x detail^2, the opening needs that many more drops to cover it) */
+const DETAIL = CFG.detail || 1;
 const MARG = 0.14;  // world margin round the visible plate; eddies circulate through it
-const REF_CAP = coarse ? 2048 : 2560;   // reference texture's long side, device px
+const REF_CAP = CFG.refCap || (coarse ? 2048 : 2560);   // reference texture's long side, device px (CFG.refCap: print stills)
 const MAP_CAP = coarse ? 640 : 1024;
 
 /* ══ SHADERS ═══════════════════════════════════════════════════════════ */
@@ -1660,7 +1716,7 @@ uniform float uHot, uVig, uCreamLo, uCreamAmt, uGrain, uSeedT, uDpr, uFade, uSha
 #ifdef SHADOW
 uniform vec3  uInkS[8], uPlateS;   // the shadow's inks (linear) and the card's colour (sRGB)
 uniform vec4  uSRect;              // the card, device px from the bottom left: centre, half size
-uniform float uSRad, uSOn, uGrainS;
+uniform float uSRad, uSOn, uGrainS, uSInv;   // uSInv: the shadow outside the card instead
 #endif
 in vec2 vUv;
 out vec4 o;
@@ -1720,6 +1776,7 @@ void main(){
   if (uSOn > 0.5){
     vec2 qd = abs(gl_FragCoord.xy - uSRect.xy) - uSRect.zw + uSRad;
     float inS = clamp(0.5 - (length(max(qd, 0.0)) + min(max(qd.x, qd.y), 0.0) - uSRad), 0.0, 1.0);
+    if (uSInv > 0.5) inS = 1.0 - inS;
     if (inS > 0.0){
       vec3 ls = F.x * uInkS[0] + F.y * uInkS[1] + F.z * uInkS[2]
               + FB.x * uInkS[3] + FB.y * uInkS[4] + FB.z * uInkS[5] + FB.w * uInkS[6]
@@ -1874,7 +1931,7 @@ function sizeFromHost(){
   DPR = Math.max(0.5, Math.min(window.devicePixelRatio || 1, 3) * quality);
   W = Math.max(2, Math.round(cssW * DPR));
   H = Math.max(2, Math.round(cssH * DPR));
-  const wu = Math.sqrt(cssW * cssH);
+  const wu = Math.sqrt(cssW * cssH) / DETAIL;
   VX = cssW / wu; VY = cssH / wu;
   DX = VX + 2 * MARG; DY = VY + 2 * MARG;
   const px = wu * DPR;                        // device px per world unit
@@ -2247,7 +2304,7 @@ function composeBoot(rnd){
   lay(cover[0], 0.035, 0.03, CFG.vein === undefined ? 0.5 : CFG.vein, 0);
   lay(cover[1], 0.055, 0.065, 0, 1);
   lay(cover[2], 0.11, 0.06, 0, 2);
-  for (let b = 0; b < 2; b++){
+  for (let b = 0; b < Math.round(2 * DETAIL * DETAIL); b++){   // as many per world area
     const x = (0.15 + 0.7 * rnd()) * VX, y = (0.15 + 0.7 * rnd()) * VY;
     let r = 0.10 + 0.05 * rnd();
     for (let k = 0; k < 3; k++){ ink = pickInk(ink, rnd); drop(x, y, r, ink); r *= 0.58 + 0.12 * rnd(); }
@@ -2724,10 +2781,15 @@ function shadowOn(c, f, sx, sy, radCss){
   gl.uniform1f(L(pr, 'uGrainS'), S.grain);
   /* 1 css px in by default, under the card's border; a page with no border asks for less */
   const ins = S.inset === undefined ? 1 : S.inset;
+  /* S.clipTop: the card stops at the foot of that element (a pinned bar it scrolls under) */
+  let top = f.top;
+  const clip = S.clipTop && document.querySelector(S.clipTop);
+  if (clip) top = Math.max(top, clip.getBoundingClientRect().bottom);
   const x0 = (f.left - c.left + ins) * sx, x1 = (f.right - c.left - ins) * sx;
-  const y0 = (f.top - c.top + ins) * sy, y1 = (f.bottom - c.top - ins) * sy;
+  const y0 = (top - c.top + ins) * sy, y1 = (f.bottom - c.top - ins) * sy;
   gl.uniform4f(L(pr, 'uSRect'), 0.5 * (x0 + x1), H - 0.5 * (y0 + y1), 0.5 * (x1 - x0), 0.5 * (y1 - y0));
   gl.uniform1f(L(pr, 'uSRad'), Math.max(0, radCss - ins) * sx);
+  gl.uniform1f(L(pr, 'uSInv'), S.invert ? 1 : 0);
   gl.uniform1f(L(pr, 'uSOn'), 1);
 }
 
@@ -3023,7 +3085,7 @@ try {
      the page opens on marbling (it is a few tens of ms of GPU work) */
   if (CFG.instant) bootRows(0, RH);
   render();
-  raf = requestAnimationFrame(loop);
+  if (!CFG.still) raf = requestAnimationFrame(loop);   /* CFG.still: draws only on MARBLE.pump() */
 } catch (err) {
   /* shader or context failure: leave the plain panel colour */
   cv.style.display = 'none';
